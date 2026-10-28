@@ -26,7 +26,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Native runner per arch (the mgmt observability nodepool is arm64).
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout fork (with sso/ overlay)
         uses: actions/checkout@v7
@@ -65,15 +73,39 @@ jobs:
           context: build
           file: build/docker/hyperdx/Dockerfile
           target: prod
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           build-contexts: |
             hyperdx=build/docker/hyperdx
             api=build/packages/api
             app=build/packages/app
           build-args: |
             CODE_VERSION=${{ steps.ver.outputs.version }}-sso
-          tags: |
-            ghcr.io/${{ steps.img.outputs.name }}:${{ steps.ver.outputs.version }}-sso
-            ghcr.io/${{ steps.img.outputs.name }}:sso-latest
+          tags: ghcr.io/${{ steps.img.outputs.name }}:${{ steps.ver.outputs.version }}-sso-${{ matrix.arch }}
           push: true
           provenance: false
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Create multi-arch manifest
+        run: |
+          TAG="${{ github.event.inputs.upstream_tag || '@hyperdx/app@2.39.1' }}"
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          SRC="${IMAGE}:${TAG##*@}-sso"
+          docker buildx imagetools create \
+            -t "${SRC}" \
+            -t "${IMAGE}:sso-latest" \
+            "${SRC}-amd64" \
+            "${SRC}-arm64"
+          docker buildx imagetools inspect "${SRC}"
