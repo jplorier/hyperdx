@@ -4,6 +4,7 @@ import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import type { NextFunction, Request, Response } from 'express';
 import type { AnyZodObject } from 'zod';
 
+import { FRONTEND_URL } from '@/config';
 import ProxyAuthRole, {
   PROXY_AUTH_ROLES,
   type ProxyAuthRoleName,
@@ -50,13 +51,16 @@ const ACCESS_KEY_PATH = /^\/(mcp|api\/v2)(\/|$)/;
 
 const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
 
+// Path patterns below are matched against the lowercased path, so they must be
+// written in lowercase.
+
 // Non-GET routes that only read data or touch the caller's own state.
 // /mcp is gated per tool by guardMcpTool.
 const VIEWER_WRITES = [
   /^\/clickhouse-proxy\/(?!test(\/|$))/,
   /^\/v1\/prometheus\/query/,
   /^\/ai\/assistant$/,
-  /^\/me\/(onboarding\/|accessKey$)/,
+  /^\/me\/(onboarding\/|accesskey$)/,
   /^\/favorites(\/|$)/,
   /^\/api\/v2\/(search|charts\/series|dashboards\/validate)\/?$/,
   /^\/mcp\/?$/,
@@ -69,6 +73,25 @@ const MEMBER_WRITES = [
   /^\/(dashboards|saved-search|alerts|webhooks|pinned-filters)(\/|$)/,
   /^\/api\/v2\/(dashboards|saved-searches|alerts|webhooks)(\/|$)/,
 ];
+
+// Password sign-in and invite flows bypass the proxy identity, so they are
+// switched off while proxy auth is on.
+const PASSWORD_AUTH_PATH =
+  /^\/(login\/password|register\/password|team\/setup\/)/;
+
+// Responses that embed the team ingestion key, which lets anyone write
+// telemetry, so only admins receive it.
+const TEAM_KEY_PATH = /^\/(me|team)\/?$/;
+
+// Unset in some environments (tests, local mode); then any Origin counts as
+// cross-site.
+const FRONTEND_ORIGIN = (() => {
+  try {
+    return new URL(FRONTEND_URL).origin;
+  } catch {
+    return undefined;
+  }
+})();
 
 // Refresh the stored role at most this often per user unless it changes.
 const RECORD_INTERVAL_MS = 60 * 60 * 1000;
@@ -91,14 +114,37 @@ function roleForGroups(groups: string[]): ProxyAuthRoleName {
   return groups.some(g => MEMBER_GROUPS.includes(g)) ? 'member' : 'viewer';
 }
 
-function requiredRole(req: Request): ProxyAuthRoleName {
+function requiredRole(method: string, path: string): ProxyAuthRoleName {
   if (
-    SAFE_METHODS.includes(req.method) ||
-    VIEWER_WRITES.some(re => re.test(req.path))
+    SAFE_METHODS.includes(method) ||
+    VIEWER_WRITES.some(re => re.test(path))
   ) {
     return 'viewer';
   }
-  return MEMBER_WRITES.some(re => re.test(req.path)) ? 'member' : 'admin';
+  return MEMBER_WRITES.some(re => re.test(path)) ? 'member' : 'admin';
+}
+
+// oauth2-proxy authenticates any request carrying its cookie, so a form posted
+// from another site would act as the victim. Browsers label every request with
+// Sec-Fetch-Site; Origin covers the ones that don't.
+function isCrossSite(req: Request) {
+  const site = headerValue(req, 'sec-fetch-site');
+  if (site) {
+    return site !== 'same-origin' && site !== 'none';
+  }
+  const origin = headerValue(req, 'origin');
+  return !!origin && origin !== FRONTEND_ORIGIN;
+}
+
+function withoutIngestionKey(body: unknown) {
+  const data = JSON.parse(JSON.stringify(body ?? null));
+  for (const team of [data, data?.team]) {
+    if (team && typeof team === 'object') {
+      delete team.apiKey;
+      delete team.hookId;
+    }
+  }
+  return data;
 }
 
 function recordRole(
@@ -146,11 +192,18 @@ export async function proxyAuthRoleGuard(
     return next();
   }
 
+  // Express matches routes case-insensitively, so every check below must too.
+  const path = req.path.toLowerCase();
+
+  if (PASSWORD_AUTH_PATH.test(path)) {
+    return res.sendStatus(404);
+  }
+
   try {
     let role: ProxyAuthRoleName;
     let email: string | undefined;
 
-    if (ACCESS_KEY_PATH.test(req.path)) {
+    if (ACCESS_KEY_PATH.test(path)) {
       const key = req.headers.authorization?.split('Bearer ')[1];
       const user = key ? await User.findOne({ accessKey: key }) : null;
       if (!key || !user) {
@@ -196,10 +249,17 @@ export async function proxyAuthRoleGuard(
       } else if (req.user) {
         recordRole(req.user, role, groups);
       }
+
+      if (!SAFE_METHODS.includes(req.method) && isCrossSite(req)) {
+        logger.warn(
+          { method: req.method, path, email, origin: req.headers.origin },
+          'Proxy auth: cross-site write blocked',
+        );
+        return res.status(403).json({ message: 'Cross-site request blocked' });
+      }
     }
 
-    const needed = requiredRole(req);
-    const path = req.path;
+    const needed = requiredRole(req.method, path);
     if (!hasRole(role, needed)) {
       writeDecisions.add(1, { role, outcome: 'denied' });
       logger.warn(
@@ -216,6 +276,11 @@ export async function proxyAuthRoleGuard(
       url.searchParams.set('readonly', '2');
       req.url = `${url.pathname}${url.search}`;
       req.originalUrl = req.url;
+    }
+
+    if (role !== 'admin' && req.method === 'GET' && TEAM_KEY_PATH.test(path)) {
+      const json = res.json.bind(res);
+      res.json = body => json(withoutIngestionKey(body));
     }
 
     if (needed !== 'viewer') {

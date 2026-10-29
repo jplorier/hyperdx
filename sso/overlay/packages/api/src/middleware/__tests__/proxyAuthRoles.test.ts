@@ -31,6 +31,7 @@ function load(adminGroups = 'topia-io:devops,metaversecloud-com:devops') {
     process.env.PROXY_AUTH_ADMIN_GROUPS = adminGroups;
     process.env.PROXY_AUTH_MEMBER_GROUPS = 'topia-io:dev';
     process.env.PROXY_AUTH_EMAIL_HEADER = 'x-forwarded-email';
+    process.env.FRONTEND_URL = 'https://click.topia.io';
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     mod = require('../proxyAuthRoles');
   });
@@ -55,6 +56,8 @@ function buildApp(
       originalUrl: req.originalUrl,
       user: req.user ?? null,
       auth: (req as { auth?: unknown }).auth ?? null,
+      apiKey: 'ingest',
+      team: { name: 'HyperDX', apiKey: 'ingest', hookId: 'hook' },
     });
   });
   return app;
@@ -172,6 +175,93 @@ describe('proxyAuthRoleGuard (session)', () => {
       .delete('/sources/1')
       .set('x-forwarded-groups', VIEWER)
       .expect(200);
+  });
+});
+
+describe('proxyAuthRoleGuard (hardening)', () => {
+  const app = buildApp();
+
+  it.each([
+    ['post', '/clickhouse-proxy/TEST', VIEWER],
+    ['post', '/Clickhouse-Proxy/test', MEMBER],
+    ['put', '/Sources/1', MEMBER],
+    ['post', '/DASHBOARDS', VIEWER],
+  ] as const)(
+    'applies roles to case variant %s %s',
+    async (method, path, groups) => {
+      await request(app)
+        [method](path)
+        .set('x-forwarded-groups', groups)
+        .expect(403);
+    },
+  );
+
+  it('forces readonly=2 on case-variant ClickHouse paths', async () => {
+    const res = await request(app)
+      .post('/CLICKHOUSE-PROXY/?query_id=1')
+      .set('x-forwarded-groups', VIEWER)
+      .expect(200);
+    expect(res.body.url).toContain('readonly=2');
+  });
+
+  it.each([
+    [{ 'sec-fetch-site': 'cross-site' }],
+    [{ 'sec-fetch-site': 'same-site' }],
+    [{ origin: 'https://evil.example' }],
+  ])('blocks cross-site writes %j', async headers => {
+    await request(app)
+      .post('/alerts/1/silenced')
+      .set('x-forwarded-groups', ADMIN)
+      .set(headers)
+      .expect(403);
+  });
+
+  it.each([
+    [{ 'sec-fetch-site': 'same-origin' }],
+    [{ origin: 'https://click.topia.io' }],
+    [{}],
+  ])('allows same-origin and non-browser writes %j', async headers => {
+    await request(app)
+      .post('/alerts/1/silenced')
+      .set('x-forwarded-groups', ADMIN)
+      .set(headers)
+      .expect(200);
+  });
+
+  it('ignores Sec-Fetch-Site on cross-site reads', async () => {
+    await request(app)
+      .get('/dashboards')
+      .set('x-forwarded-groups', VIEWER)
+      .set('sec-fetch-site', 'cross-site')
+      .expect(200);
+  });
+
+  it.each(['/me', '/team'])(
+    'hides the ingestion key from non-admins on GET %s',
+    async path => {
+      for (const groups of [VIEWER, MEMBER]) {
+        const res = await request(app)
+          .get(path)
+          .set('x-forwarded-groups', groups)
+          .expect(200);
+        expect(res.body.apiKey).toBeUndefined();
+        expect(res.body.team).toEqual({ name: 'HyperDX' });
+      }
+      const admin = await request(app)
+        .get(path)
+        .set('x-forwarded-groups', ADMIN)
+        .expect(200);
+      expect(admin.body.team.apiKey).toBe('ingest');
+    },
+  );
+
+  it.each([
+    '/login/password',
+    '/register/password',
+    '/team/setup/abc',
+    '/Login/Password',
+  ])('disables password auth route %s', async path => {
+    await request(app).post(path).set('x-forwarded-groups', ADMIN).expect(404);
   });
 });
 
