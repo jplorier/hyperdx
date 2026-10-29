@@ -11,9 +11,11 @@
 //      if the expected anchors are missing (i.e. upstream changed that file's
 //      shape) instead of silently producing a broken build.
 //   3. Anchor-based codemod of packages/api/src/api-app.ts mounting the
-//      app-wide role guard (viewer vs admin, from proxy-supplied groups).
+//      app-wide role guard (viewer/member/admin, from proxy-supplied groups).
 //   4. Anchor-based codemod of packages/app/src/HDXMultiSeriesTimeChart.tsx
 //      so time-chart x-axis ticks show the date on ranges longer than a day.
+//   5. Anchor-based codemod of packages/api/src/mcp/utils/registerTool.ts
+//      gating each MCP write tool by role (MCP multiplexes tools over one POST).
 import { cp, readFile, writeFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -94,7 +96,7 @@ if (appSrc.includes('proxyAuthRoleGuard')) {
   appSrc = appSrc
     .replace(
       appImportAnchor,
-      `${appImportAnchor}\nimport { proxyAuthRoleGuard } from './middleware/proxyAuth';`,
+      `${appImportAnchor}\nimport { proxyAuthRoleGuard } from './middleware/proxyAuthRoles';`,
     )
     .replace(corsAnchor, `${corsAnchor}\napp.use(proxyAuthRoleGuard);`);
 
@@ -106,7 +108,10 @@ if (appSrc.includes('proxyAuthRoleGuard')) {
 //    time-of-day only ('time'), whatever the range. Over a 30-day range that is
 //    a row of identical "9:00:00 AM" labels with no dates. When the range spans
 //    more than a day, label every tick with its date ('short' = MMM d h:mma).
-const chartPath = path.join(target, 'packages/app/src/HDXMultiSeriesTimeChart.tsx');
+const chartPath = path.join(
+  target,
+  'packages/app/src/HDXMultiSeriesTimeChart.tsx',
+);
 if (!(await exists(chartPath))) {
   throw new Error(`[sso] expected file not found: ${chartPath}`);
 }
@@ -114,7 +119,9 @@ if (!(await exists(chartPath))) {
 let chartSrc = await readFile(chartPath, 'utf8');
 
 if (chartSrc.includes('xTickSpansDays')) {
-  console.log('[sso] HDXMultiSeriesTimeChart.tsx already integrated, skipping codemod');
+  console.log(
+    '[sso] HDXMultiSeriesTimeChart.tsx already integrated, skipping codemod',
+  );
 } else {
   const tickAnchor =
     '  const xTickFormatter = useCallback(\n' +
@@ -145,7 +152,52 @@ if (chartSrc.includes('xTickSpansDays')) {
   );
 
   await writeFile(chartPath, chartSrc);
-  console.log('[sso] patched x-axis tick format in HDXMultiSeriesTimeChart.tsx');
+  console.log(
+    '[sso] patched x-axis tick format in HDXMultiSeriesTimeChart.tsx',
+  );
+}
+
+// 5) Gate MCP write tools by role.
+const toolPath = path.join(
+  target,
+  'packages/api/src/mcp/utils/registerTool.ts',
+);
+if (!(await exists(toolPath))) {
+  throw new Error(`[sso] expected file not found: ${toolPath}`);
+}
+
+let toolSrc = await readFile(toolPath, 'utf8');
+
+if (toolSrc.includes('guardMcpTool')) {
+  console.log('[sso] registerTool.ts already integrated, skipping codemod');
+} else {
+  const toolImportAnchor = "import { withToolTracing } from './tracing';";
+  const registerAnchor =
+    'server.registerTool<AnyZodObject, AnyZodObject>(name, config, traced);';
+  if (
+    !toolSrc.includes(toolImportAnchor) ||
+    !toolSrc.includes(registerAnchor)
+  ) {
+    throw new Error(
+      '[sso] anchors not found in registerTool.ts (layout changed)',
+    );
+  }
+  toolSrc = toolSrc
+    .replace(
+      toolImportAnchor,
+      `import { guardMcpTool } from '@/middleware/proxyAuthRoles';\n\n${toolImportAnchor}`,
+    )
+    .replace(
+      registerAnchor,
+      'server.registerTool<AnyZodObject, AnyZodObject>(\n' +
+        '      name,\n' +
+        '      config,\n' +
+        '      guardMcpTool(name, config.annotations, traced),\n' +
+        '    );',
+    );
+
+  await writeFile(toolPath, toolSrc);
+  console.log('[sso] gated MCP tools in registerTool.ts');
 }
 
 console.log('[sso] integration complete');

@@ -25,21 +25,23 @@ header is configurable via `PROXY_AUTH_EMAIL_HEADER`; in k8-mgmt we set it to
 `x-forwarded-email`.
 
 Files:
-- `overlay/` — new files, mirrored to repo paths (only `proxyAuth.ts`).
-- `integrate.mjs` — copies the overlay and applies an idempotent, anchor-based
-  codemod to `auth.ts`. Fails loudly if upstream changed that file's shape.
+- `overlay/` — new files, mirrored to repo paths: `middleware/proxyAuth.ts`
+  (sign-in), `middleware/proxyAuthRoles.ts` (roles), `models/proxyAuthRole.ts`.
+- `integrate.mjs` — copies the overlay and applies idempotent, anchor-based
+  codemods to `auth.ts`, `api-app.ts` and `mcp/utils/registerTool.ts`. Fails
+  loudly if upstream changed those files' shape.
 - `apply.sh` — checks out an upstream tag into a git worktree and runs the codemod.
 
 ## Build locally
 
 ```bash
-sso/apply.sh '@hyperdx/app@2.28.0' build
+sso/apply.sh '@hyperdx/app@2.42.0' build
 docker build -f build/docker/hyperdx/Dockerfile --target prod \
   --build-context hyperdx=build/docker/hyperdx \
   --build-context api=build/packages/api \
   --build-context app=build/packages/app \
-  --build-arg CODE_VERSION=2.28.0-sso \
-  -t ghcr.io/<owner>/hyperdx:2.28.0-sso build
+  --build-arg CODE_VERSION=2.42.0-sso \
+  -t ghcr.io/<owner>/hyperdx:2.42.0-sso build
 ```
 
 ## Build in CI
@@ -76,27 +78,70 @@ empty in Terraform — `oauth2-proxy.tf` then skips the dockerconfigjson secret 
 | `PROXY_AUTH_DEFAULT_TEAM_NAME` | `HyperDX` | (default) | Team created on first login. |
 | `PROXY_AUTH_GROUPS_HEADER` | `x-forwarded-groups` | (default) | Groups header (oauth2-proxy GitHub: `org`, `org:team`). |
 | `PROXY_AUTH_ADMIN_GROUPS` | (empty → roles off) | `topia-io:devops,metaversecloud-com:devops` | Comma-separated groups with full access. |
+| `PROXY_AUTH_MEMBER_GROUPS` | (empty) | to add: `topia-io:dev,metaversecloud-com:dev` | Groups that may author dashboards, searches, alerts, webhooks. |
+| `PROXY_AUTH_ACCESS_KEY_MAX_IDLE_DAYS` | `30` | (default) | Access keys stop working when their owner hasn't signed in via SSO for this long. `0` disables. |
 
 ### Roles
 
-HyperDX OSS has no RBAC; the overlay adds two roles, enforced app-wide by
+HyperDX OSS has no RBAC; the overlay adds three roles, enforced app-wide by
 `proxyAuthRoleGuard` (mounted before every router):
 
-- **admin** — any user in `PROXY_AUTH_ADMIN_GROUPS`: full access.
-- **viewer** — everyone else: all `GET`s plus read-only `POST`s (search/charts via
-  `/clickhouse-proxy`, `/v1/prometheus/query*`, `/ai/assistant`,
-  `/me/onboarding/*`). Every other write returns 403. Viewer ClickHouse queries
-  are forced to `readonly=2`, so raw SQL through the proxy cannot modify data.
+| Role | Who | Can |
+|------|-----|-----|
+| **admin** | in `PROXY_AUTH_ADMIN_GROUPS` | everything |
+| **member** | in `PROXY_AUTH_MEMBER_GROUPS` | viewer + create/edit/delete dashboards, saved searches, alerts, webhooks, pinned filters |
+| **viewer** | everyone else | read; run searches/charts (`/clickhouse-proxy`, PromQL, AI assistant); own favorites, onboarding, access key |
 
-The UI is unchanged: viewers still see edit buttons, but saving fails. On an
-upstream upgrade, re-check new `POST` routes viewers need and run
-`yarn ci:unit src/middleware/__tests__/proxyAuth.test.ts` in the integrated tree.
+Sources, connections, team settings, IaC and connection tests are admin-only.
+Any write route not classified in `proxyAuthRoles.ts` is admin-only, so routes
+added upstream fail closed. Non-admin ClickHouse queries are forced to
+`readonly=2`, so raw SQL through the proxy cannot modify data.
+
+Write decisions are logged (`Proxy auth: write`, `... write denied`,
+`... MCP write`, `... role changed`) and counted in
+`hyperdx.proxy_auth.write_decisions{role,outcome}`.
+
+The UI is unchanged: non-admins still see edit buttons, but saving returns 403
+naming the required role.
+
+### Access keys, API v2 and MCP
+
+`/api/v2/*` and `/mcp` authenticate by personal access key, not by the proxy,
+so group headers are ignored there. The role comes from the key owner's last SSO
+sign-in, stored in the `proxyauthroles` collection (refreshed at most hourly
+while they use the UI). A key is rejected with 403 if its owner never signed in
+through SSO or not within `PROXY_AUTH_ACCESS_KEY_MAX_IDLE_DAYS`.
+
+MCP serves all tools over one `POST /mcp`, so it is gated per tool: tools
+annotated `readOnlyHint` are open to viewers, `*_source` tools need admin, every
+other write tool needs member. A denied call returns an MCP tool error.
+
+**Revoking someone:** remove them from the GitHub team (blocks new SSO logins;
+existing oauth2-proxy cookies last until `cookie_expire`), and delete them in
+Team Settings to kill their access key immediately. Otherwise the key dies
+after the idle window.
+
+**oauth2-proxy must let bearer requests through** for headless clients (CLI,
+MCP, API v2), since they have no GitHub cookie. In `oauth2-proxy.tf`:
+
+```
+skip_auth_routes        = ["^/api/mcp$", "^/api/api/v2/[^.]*$"]
+skip_auth_strip_headers = true   # default; must stay on
+```
+
+The `[^.]*` keeps `..` out of the bypass. With header stripping on, a skipped
+request cannot carry `X-Forwarded-*`, and those routes only trust access keys.
+
+On an upstream upgrade, classify any new write routes in `proxyAuthRoles.ts`
+and run `yarn ci:unit src/middleware/__tests__/proxyAuthRoles.test.ts` in the
+integrated tree.
 
 > **Security:** only enable when HyperDX is reachable *exclusively* through
 > oauth2-proxy, and the proxy strips client-supplied copies of these headers.
 > Otherwise the identity header can be spoofed. oauth2-proxy strips inbound
 > `X-Forwarded-*` / `X-Auth-Request-*` before setting its own, so this holds as
-> long as nothing else can reach the app port directly.
+> long as nothing else can reach the app port directly. Enforce that with a
+> NetworkPolicy allowing ingress to the HyperDX pod only from oauth2-proxy.
 
 ## Deploy via Terraform (k8-mgmt)
 
@@ -125,7 +170,7 @@ clickstack_sso = {
   github_client_secret = "<from GitHub OAuth App>"
   cookie_secret        = "<openssl rand -base64 32 | tr -- '+/' '-_'>"
   image_repository     = "ghcr.io/<owner>/hyperdx"
-  image_tag            = "2.28.0-sso"
+  image_tag            = "2.42.0-sso"
   # ghcr_username / ghcr_pull_token omitted → public package
   # allowed_github_teams defaults to topia-io/metaversecloud-com :devops/:dev
 }
