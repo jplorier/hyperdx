@@ -1,0 +1,62 @@
+{{- $sso := .Values.global.sso }}
+{{- $host := required "global.sso.host is required" $sso.host }}
+{{- $callback := printf "https://%s/dex/callback" $host }}
+{{- if not $sso.allowedGroups }}
+{{- fail "global.sso.allowedGroups is required" }}
+{{- end }}
+{{- $connectors := list }}
+{{- with .Values.sso.github }}
+{{- if .enabled }}
+{{- if not .orgs }}
+{{- fail "sso.github.orgs is required: without it any GitHub user passes Dex" }}
+{{- end }}
+{{- $connectors = append $connectors (dict
+  "type" "github" "id" "github" "name" "GitHub"
+  "config" (dict
+    "clientID" (required "sso.github.clientID is required" .clientID)
+    "clientSecret" (required "sso.github.clientSecret is required" .clientSecret)
+    "redirectURI" $callback
+    "orgs" .orgs
+    "teamNameField" "slug")) }}
+{{- end }}
+{{- end }}
+{{- with .Values.sso.google }}
+{{- if .enabled }}
+{{- $google := dict
+  "clientID" (required "sso.google.clientID is required" .clientID)
+  "clientSecret" (required "sso.google.clientSecret is required" .clientSecret)
+  "redirectURI" $callback
+  "hostedDomains" .hostedDomains }}
+{{- if .serviceAccountJSON }}
+{{- $_ := set $google "serviceAccountFilePath" "/var/dex/google/sa.json" }}
+{{- $_ := set $google "domainToAdminEmail" (dict "*" (required "sso.google.adminEmail is required with serviceAccountJSON" .adminEmail)) }}
+{{- $_ := set $google "fetchTransitiveGroupMembership" true }}
+{{- end }}
+{{- $connectors = append $connectors (dict "type" "google" "id" "google" "name" "Google" "config" $google) }}
+{{- end }}
+{{- end }}
+{{- if not $connectors }}
+{{- fail "enable sso.github or sso.google" }}
+{{- end }}
+{{- $config := dict
+  "issuer" (printf "https://%s/dex" $host)
+  "storage" (dict "type" "kubernetes" "config" (dict "inCluster" true))
+  "web" (dict "http" "0.0.0.0:5556")
+  "oauth2" (dict "skipApprovalScreen" true)
+  "staticClients" (list (dict
+    "id" "hyperdx"
+    "name" "HyperDX"
+    "secret" (required "global.sso.oidcClientSecret is required" $sso.oidcClientSecret)
+    "redirectURIs" (list (printf "https://%s/api/sso/callback" $host))))
+  "connectors" $connectors }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dex-config
+  labels:
+    app.kubernetes.io/part-of: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+type: Opaque
+stringData:
+  config.yaml: |
+    {{- toYaml $config | nindent 4 }}

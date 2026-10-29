@@ -1,0 +1,9 @@
+dependencies:
+- name: clickstack
+  repository: https://clickhouse.github.io/ClickStack-helm-charts
+  version: 3.4.0
+- name: dex
+  repository: https://charts.dexidp.io
+  version: 0.26.0
+digest: sha256:2ed0528496abd27cac307442999187b5ee78c3fdca3804b3061b36701d8a7f61
+generated: "2026-10-29T18:25:36.634677-03:00"
