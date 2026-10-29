@@ -5,7 +5,7 @@ name: Build SSO image
 # GitHub Container Registry (ghcr.io/<owner>/<repo>) so the cluster can pull it.
 #
 # Usage: Actions tab -> "Build SSO image" -> Run workflow -> pick the upstream
-# app tag that matches the ClickStack chart's appVersion (e.g. @hyperdx/app@2.39.1).
+# app tag that matches the ClickStack chart's appVersion (e.g. @hyperdx/app@2.42.0).
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ on:
       upstream_tag:
         description: 'Upstream HyperDX app tag to build (must match chart appVersion)'
         required: true
-        default: '@hyperdx/app@2.39.1'
+        default: '@hyperdx/app@2.42.0'
   push:
     branches: [main]
     paths:
@@ -44,8 +44,8 @@ jobs:
       - name: Resolve tag & version
         id: ver
         run: |
-          TAG="${{ github.event.inputs.upstream_tag || '@hyperdx/app@2.39.1' }}"
-          VERSION="${TAG##*@}"   # @hyperdx/app@2.39.1 -> 2.39.1
+          TAG="${{ github.event.inputs.upstream_tag || '@hyperdx/app@2.42.0' }}"
+          VERSION="${TAG##*@}"   # @hyperdx/app@2.42.0 -> 2.42.0
           echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
           echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
           echo "Building $TAG (version $VERSION)"
@@ -102,7 +102,7 @@ jobs:
       # stale cached image after a rebuild of the same upstream version.
       - name: Create multi-arch manifest
         run: |
-          TAG="${{ github.event.inputs.upstream_tag || '@hyperdx/app@2.39.1' }}"
+          TAG="${{ github.event.inputs.upstream_tag || '@hyperdx/app@2.42.0' }}"
           IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           SRC="${IMAGE}:${TAG##*@}-sso"
           docker buildx imagetools create \
