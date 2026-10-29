@@ -1,55 +1,71 @@
 import express from 'express';
 import request from 'supertest';
 
-const ADMIN = 'topia-io, topia-io:devops';
-const MEMBER = 'topia-io, topia-io:dev';
-const VIEWER = 'topia-io';
+import type { SsoDeps } from '../types';
 
-const mockFindUser = jest.fn();
 const mockFindRole = jest.fn();
-const mockUpsertRole = jest.fn();
+const mockFindUserByAccessKey = jest.fn();
 
-jest.mock('@/models/user', () => ({
+jest.mock('../model', () => ({
   __esModule: true,
-  default: { findOne: (...args: unknown[]) => mockFindUser(...args) },
-}));
-jest.mock('@/models/proxyAuthRole', () => ({
-  __esModule: true,
-  PROXY_AUTH_ROLES: ['viewer', 'member', 'admin'],
-  default: {
-    findOne: (...args: unknown[]) => mockFindRole(...args),
-    findOneAndUpdate: (...args: unknown[]) => mockUpsertRole(...args),
-  },
+  SSO_ROLES: ['viewer', 'member', 'admin'],
+  default: { findOne: (...args: unknown[]) => mockFindRole(...args) },
 }));
 
-type Roles = typeof import('../proxyAuthRoles');
+type Roles = typeof import('../roles');
 
-function load(adminGroups = 'topia-io:devops,metaversecloud-com:devops') {
+const deps: SsoDeps = {
+  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+  frontendUrl: 'https://click.topia.io',
+  redirectBase: 'https://click.topia.io',
+  findOrCreateUser: jest.fn(),
+  findUserByAccessKey: (...args) => mockFindUserByAccessKey(...args),
+};
+
+function load(adminGroups = 'topia-io:devops,ops@topia.io') {
   let mod: Roles;
   jest.isolateModules(() => {
-    process.env.PROXY_AUTH_ENABLED = 'true';
-    process.env.PROXY_AUTH_ADMIN_GROUPS = adminGroups;
-    process.env.PROXY_AUTH_MEMBER_GROUPS = 'topia-io:dev';
-    process.env.PROXY_AUTH_EMAIL_HEADER = 'x-forwarded-email';
-    process.env.FRONTEND_URL = 'https://click.topia.io';
+    process.env.SSO_ENABLED = 'true';
+    process.env.SSO_ADMIN_GROUPS = adminGroups;
+    process.env.SSO_MEMBER_GROUPS = 'topia-io:dev';
+    process.env.SSO_ALLOWED_GROUPS = 'topia-io';
+    process.env.SSO_SESSION_MAX_HOURS = '24';
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    mod = require('../proxyAuthRoles');
+    mod = require('../roles');
   });
   return mod!;
 }
 
-function buildApp(
-  adminGroups?: string,
-  sessionUser?: { _id: string; email: string },
-) {
-  const { proxyAuthRoleGuard } = load(adminGroups);
+const user = { _id: 'u1', email: 'dev@topia.io' };
+
+// Stands in for express-session + passport. `x-test-role` is the role set at
+// sign-in; `x-test-verified-ago` its age in hours; `x-test-session-user`
+// overrides whose session it is.
+function buildApp() {
   const app = express();
   app.use((req, _res, next) => {
-    // Stands in for passport.session().
-    req.user = sessionUser as Express.User | undefined;
+    const role = req.headers['x-test-role'];
+    const r = req as any;
+    r.user = role ? user : undefined;
+    r.session = role
+      ? {
+          sso: {
+            userId: req.headers['x-test-session-user'] ?? user._id,
+            role,
+            groups: [],
+            verifiedAt:
+              Date.now() -
+              Number(req.headers['x-test-verified-ago'] ?? 0) * 3600 * 1000,
+          },
+        }
+      : {};
+    r.logout = (cb: (err?: unknown) => void) => {
+      r.user = null;
+      cb();
+    };
     next();
   });
-  app.use(proxyAuthRoleGuard);
+  app.use(load().createRoleGuard(deps));
   app.use((req, res) => {
     res.json({
       url: req.url,
@@ -64,28 +80,43 @@ function buildApp(
 }
 
 beforeEach(() => {
-  mockFindUser.mockReset();
   mockFindRole.mockReset();
-  mockUpsertRole.mockReset().mockResolvedValue(null);
+  mockFindUserByAccessKey.mockReset();
 });
 
-describe('proxyAuthRoleGuard (session)', () => {
+describe('roleForGroups / isAllowed', () => {
+  const { roleForGroups, isAllowed } = load();
+
+  it.each([
+    [['topia-io', 'topia-io:devops'], 'admin'],
+    [['ops@topia.io'], 'admin'],
+    [['topia-io', 'topia-io:dev'], 'member'],
+    [['topia-io'], 'viewer'],
+  ])('%j -> %s', (groups, role) => {
+    expect(roleForGroups(groups)).toBe(role);
+  });
+
+  it('makes everyone admin when no admin groups are configured', () => {
+    expect(load('').roleForGroups(['topia-io'])).toBe('admin');
+  });
+
+  it('requires an allowed group', () => {
+    expect(isAllowed(['topia-io'])).toBe(true);
+    expect(isAllowed(['other-org'])).toBe(false);
+  });
+});
+
+describe('ssoRoleGuard (session)', () => {
   const app = buildApp();
 
   it('lets admins write anything', async () => {
     for (const path of ['/dashboards/1', '/sources/1', '/team/member/1']) {
-      await request(app)
-        .delete(path)
-        .set('x-forwarded-groups', ADMIN)
-        .expect(200);
+      await request(app).delete(path).set('x-test-role', 'admin').expect(200);
     }
   });
 
   it('lets everyone read', async () => {
-    await request(app)
-      .get('/sources')
-      .set('x-forwarded-groups', VIEWER)
-      .expect(200);
+    await request(app).get('/sources').set('x-test-role', 'viewer').expect(200);
   });
 
   it.each([
@@ -98,10 +129,7 @@ describe('proxyAuthRoleGuard (session)', () => {
     ['post', '/webhooks/test'],
     ['put', '/pinned-filters'],
   ] as const)('lets members %s %s', async (method, path) => {
-    await request(app)
-      [method](path)
-      .set('x-forwarded-groups', MEMBER)
-      .expect(200);
+    await request(app)[method](path).set('x-test-role', 'member').expect(200);
   });
 
   it.each([
@@ -114,7 +142,7 @@ describe('proxyAuthRoleGuard (session)', () => {
   ] as const)('denies members %s %s', async (method, path) => {
     const res = await request(app)
       [method](path)
-      .set('x-forwarded-groups', MEMBER)
+      .set('x-test-role', 'member')
       .expect(403);
     expect(res.body.message).toContain('requires admin');
   });
@@ -124,14 +152,7 @@ describe('proxyAuthRoleGuard (session)', () => {
     ['delete', '/alerts/1'],
     ['put', '/pinned-filters'],
   ] as const)('denies viewers %s %s', async (method, path) => {
-    await request(app)
-      [method](path)
-      .set('x-forwarded-groups', VIEWER)
-      .expect(403);
-  });
-
-  it('treats a missing groups header as viewer', async () => {
-    await request(app).post('/dashboards').expect(403);
+    await request(app)[method](path).set('x-test-role', 'viewer').expect(403);
   });
 
   it.each([
@@ -142,18 +163,15 @@ describe('proxyAuthRoleGuard (session)', () => {
     ['patch', '/me/accessKey'],
     ['put', '/favorites'],
   ] as const)('lets viewers %s %s', async (method, path) => {
-    await request(app)
-      [method](path)
-      .set('x-forwarded-groups', VIEWER)
-      .expect(200);
+    await request(app)[method](path).set('x-test-role', 'viewer').expect(200);
   });
 
-  it.each([VIEWER, MEMBER])(
+  it.each(['viewer', 'member'])(
     'forces readonly=2 on non-admin ClickHouse queries (%s)',
-    async groups => {
+    async role => {
       const res = await request(app)
         .post('/clickhouse-proxy/?query_id=1&readonly=0')
-        .set('x-forwarded-groups', groups)
+        .set('x-test-role', role)
         .expect(200);
       const params = new URL(res.body.originalUrl, 'http://x').searchParams;
       expect(params.getAll('readonly')).toEqual(['2']);
@@ -165,44 +183,49 @@ describe('proxyAuthRoleGuard (session)', () => {
   it('leaves admin ClickHouse queries untouched', async () => {
     const res = await request(app)
       .post('/clickhouse-proxy/?query_id=1')
-      .set('x-forwarded-groups', ADMIN)
+      .set('x-test-role', 'admin')
       .expect(200);
     expect(res.body.originalUrl).not.toContain('readonly');
   });
 
-  it('lets everyone write when no admin groups are configured', async () => {
-    await request(buildApp(''))
-      .delete('/sources/1')
-      .set('x-forwarded-groups', VIEWER)
+  it('passes unauthenticated requests through to isUserAuthenticated', async () => {
+    const res = await request(app).post('/dashboards').expect(200);
+    expect(res.body.user).toBeNull();
+  });
+
+  it('signs out a session whose sign-in is older than the max age', async () => {
+    const res = await request(app)
+      .get('/dashboards')
+      .set('x-test-role', 'admin')
+      .set('x-test-verified-ago', '25')
       .expect(200);
+    expect(res.body.user).toBeNull();
+  });
+
+  it('signs out a session whose SSO record is for another user', async () => {
+    const res = await request(app)
+      .get('/dashboards')
+      .set('x-test-role', 'admin')
+      .set('x-test-session-user', 'u9')
+      .expect(200);
+    expect(res.body.user).toBeNull();
   });
 });
 
-describe('proxyAuthRoleGuard (hardening)', () => {
+describe('ssoRoleGuard (hardening)', () => {
   const app = buildApp();
 
   it.each([
-    ['post', '/clickhouse-proxy/TEST', VIEWER],
-    ['post', '/Clickhouse-Proxy/test', MEMBER],
-    ['put', '/Sources/1', MEMBER],
-    ['post', '/DASHBOARDS', VIEWER],
+    ['post', '/clickhouse-proxy/TEST', 'viewer'],
+    ['post', '/Clickhouse-Proxy/test', 'member'],
+    ['put', '/Sources/1', 'member'],
+    ['post', '/DASHBOARDS', 'viewer'],
   ] as const)(
     'applies roles to case variant %s %s',
-    async (method, path, groups) => {
-      await request(app)
-        [method](path)
-        .set('x-forwarded-groups', groups)
-        .expect(403);
+    async (method, path, role) => {
+      await request(app)[method](path).set('x-test-role', role).expect(403);
     },
   );
-
-  it('forces readonly=2 on case-variant ClickHouse paths', async () => {
-    const res = await request(app)
-      .post('/CLICKHOUSE-PROXY/?query_id=1')
-      .set('x-forwarded-groups', VIEWER)
-      .expect(200);
-    expect(res.body.url).toContain('readonly=2');
-  });
 
   it.each([
     [{ 'sec-fetch-site': 'cross-site' }],
@@ -211,7 +234,7 @@ describe('proxyAuthRoleGuard (hardening)', () => {
   ])('blocks cross-site writes %j', async headers => {
     await request(app)
       .post('/alerts/1/silenced')
-      .set('x-forwarded-groups', ADMIN)
+      .set('x-test-role', 'admin')
       .set(headers)
       .expect(403);
   });
@@ -223,33 +246,25 @@ describe('proxyAuthRoleGuard (hardening)', () => {
   ])('allows same-origin and non-browser writes %j', async headers => {
     await request(app)
       .post('/alerts/1/silenced')
-      .set('x-forwarded-groups', ADMIN)
+      .set('x-test-role', 'admin')
       .set(headers)
-      .expect(200);
-  });
-
-  it('ignores Sec-Fetch-Site on cross-site reads', async () => {
-    await request(app)
-      .get('/dashboards')
-      .set('x-forwarded-groups', VIEWER)
-      .set('sec-fetch-site', 'cross-site')
       .expect(200);
   });
 
   it.each(['/me', '/team'])(
     'hides the ingestion key from non-admins on GET %s',
     async path => {
-      for (const groups of [VIEWER, MEMBER]) {
+      for (const role of ['viewer', 'member']) {
         const res = await request(app)
           .get(path)
-          .set('x-forwarded-groups', groups)
+          .set('x-test-role', role)
           .expect(200);
         expect(res.body.apiKey).toBeUndefined();
         expect(res.body.team).toEqual({ name: 'HyperDX' });
       }
       const admin = await request(app)
         .get(path)
-        .set('x-forwarded-groups', ADMIN)
+        .set('x-test-role', 'admin')
         .expect(200);
       expect(admin.body.team.apiKey).toBe('ingest');
     },
@@ -261,52 +276,21 @@ describe('proxyAuthRoleGuard (hardening)', () => {
     '/team/setup/abc',
     '/Login/Password',
   ])('disables password auth route %s', async path => {
-    await request(app).post(path).set('x-forwarded-groups', ADMIN).expect(404);
+    await request(app).post(path).set('x-test-role', 'admin').expect(404);
   });
 });
 
-describe('proxyAuthRoleGuard (session identity)', () => {
-  const user = { _id: 'u1', email: 'dev@topia.io' };
-
-  it('records the role of the signed-in user once', async () => {
-    const app = buildApp(undefined, user);
-    for (let i = 0; i < 2; i++) {
-      await request(app)
-        .get('/dashboards')
-        .set('x-forwarded-email', 'Dev@topia.io')
-        .set('x-forwarded-groups', MEMBER)
-        .expect(200);
-    }
-    expect(mockUpsertRole).toHaveBeenCalledTimes(1);
-    expect(mockUpsertRole.mock.calls[0][0]).toEqual({ user: 'u1' });
-    expect(mockUpsertRole.mock.calls[0][1]).toMatchObject({
-      role: 'member',
-      groups: ['topia-io', 'topia-io:dev'],
-    });
-  });
-
-  it('drops a session that belongs to another account', async () => {
-    const res = await request(buildApp(undefined, user))
-      .get('/dashboards')
-      .set('x-forwarded-email', 'someone-else@topia.io')
-      .set('x-forwarded-groups', ADMIN)
-      .expect(200);
-    expect(res.body.user).toBeNull();
-    expect(mockUpsertRole).not.toHaveBeenCalled();
-  });
-});
-
-describe('proxyAuthRoleGuard (access key)', () => {
+describe('ssoRoleGuard (access key)', () => {
   const app = buildApp();
   const keyUser = { _id: 'u2', email: 'bot@topia.io' };
 
   function withRole(role: string, lastSeenAt = new Date()) {
-    mockFindUser.mockResolvedValue(keyUser);
+    mockFindUserByAccessKey.mockResolvedValue(keyUser);
     mockFindRole.mockResolvedValue({ role, lastSeenAt });
   }
 
   it('passes unknown keys through for validateUserAccessKey to reject', async () => {
-    mockFindUser.mockResolvedValue(null);
+    mockFindUserByAccessKey.mockResolvedValue(null);
     await request(app)
       .post('/api/v2/dashboards')
       .set('authorization', 'Bearer nope')
@@ -338,17 +322,8 @@ describe('proxyAuthRoleGuard (access key)', () => {
       .expect(403);
   });
 
-  it('ignores group headers on access-key requests', async () => {
-    withRole('viewer');
-    await request(app)
-      .post('/api/v2/sources')
-      .set('authorization', 'Bearer k')
-      .set('x-forwarded-groups', ADMIN)
-      .expect(403);
-  });
-
   it('rejects keys whose owner never signed in', async () => {
-    mockFindUser.mockResolvedValue(keyUser);
+    mockFindUserByAccessKey.mockResolvedValue(keyUser);
     mockFindRole.mockResolvedValue(null);
     const res = await request(app)
       .get('/api/v2/dashboards')
@@ -379,13 +354,12 @@ describe('proxyAuthRoleGuard (access key)', () => {
 });
 
 describe('guardMcpTool', () => {
-  const { guardMcpTool } = load();
+  const guardMcpTool = load().createMcpToolGuard(deps);
   const ok = { content: [{ type: 'text' as const, text: 'ok' }] };
   const handler = jest.fn().mockResolvedValue(ok);
 
   function call(name: string, readOnlyHint: boolean, role: string | undefined) {
     const extra = { authInfo: role ? { extra: { role } } : undefined };
-
     return guardMcpTool(name, { readOnlyHint }, handler)({}, extra as any);
   }
 

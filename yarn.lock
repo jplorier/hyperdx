@@ -4752,6 +4752,7 @@ __metadata:
     "@hyperdx/common-utils": "npm:^0.32.0"
     "@hyperdx/node-opentelemetry": "npm:^0.9.0"
     "@hyperdx/passport-local-mongoose": "npm:^9.0.1"
+    "@hyperdx/sso": "workspace:*"
     "@modelcontextprotocol/sdk": "npm:^1.27.1"
     "@opentelemetry/api": "npm:^1.8.0"
     "@opentelemetry/host-metrics": "npm:^0.35.5"
@@ -5208,6 +5209,36 @@ __metadata:
   checksum: 10c0/beba3eae1c827609ad2318f5660e6e91d9195430ed00d807570a63eca82cc1bf123d19ad5526d9855ecdf2c376348f28f0bda411f1dc33eb1b56316e3699c3d3
   languageName: node
   linkType: hard
+
+"@hyperdx/sso@workspace:*, @hyperdx/sso@workspace:packages/sso":
+  version: 0.0.0-use.local
+  resolution: "@hyperdx/sso@workspace:packages/sso"
+  dependencies:
+    "@modelcontextprotocol/sdk": "npm:^1.27.1"
+    "@opentelemetry/api": "npm:^1.8.0"
+    "@types/express": "npm:^4.17.13"
+    "@types/express-session": "npm:^1.17.7"
+    "@types/jest": "npm:^29.5.14"
+    "@types/passport": "npm:^1.0.12"
+    "@types/supertest": "npm:^2.0.12"
+    express: "npm:^4.19.2"
+    express-session: "npm:^1.17.3"
+    jest: "npm:^30.2.0"
+    mongoose: "npm:^6.13.10"
+    openid-client: "npm:6.8.8"
+    passport: "npm:^0.6.0"
+    rimraf: "npm:^4.4.1"
+    supertest: "npm:^6.3.1"
+    ts-jest: "npm:^29.4.11"
+    typescript: "npm:^6.0.3"
+    zod: "npm:3.25"
+  peerDependencies:
+    "@modelcontextprotocol/sdk": ^1.27.1
+    express: ^4.19.2
+    mongoose: ^6.13.10
+    passport: ^0.6.0
+  languageName: unknown
+  linkType: soft
 
 "@img/colour@npm:^1.1.0":
   version: 1.1.0
@@ -12066,6 +12097,15 @@ __metadata:
   dependencies:
     "@types/express": "npm:*"
   checksum: 10c0/b825ee5e7b67f84b760e3fe0d2d06079fedbf49ef35bd4334a879f9b7f0b2c2d27829f6c89fdc3c768616e66da8850a5855b2afdd2e641927e9ce6454ae26480
+  languageName: node
+  linkType: hard
+
+"@types/passport@npm:^1.0.12":
+  version: 1.0.17
+  resolution: "@types/passport@npm:1.0.17"
+  dependencies:
+    "@types/express": "npm:*"
+  checksum: 10c0/09039429a9178117a80880c4e7d437abc83216eac5e0c97bc6f14a03a59193386cff484931dc880693f8b13a512c366ef7a51ecd8cc1a63f17366be68161f633
   languageName: node
   linkType: hard
 
@@ -21853,6 +21893,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"jose@npm:^6.2.12":
+  version: 6.2.13
+  resolution: "jose@npm:6.2.13"
+  checksum: 10c0/a7a175057fd42e129200026320d535deba5c869e764bdb130d4aecb7cc2a22c07eab2bf9fc848188b45b89d95f8e0ba4ce01a8259a4fa45c84bec34f66f2918e
+  languageName: node
+  linkType: hard
+
 "jotai@npm:^2.5.1":
   version: 2.5.1
   resolution: "jotai@npm:2.5.1"
@@ -24762,6 +24809,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"oauth4webapi@npm:^3.8.8":
+  version: 3.8.8
+  resolution: "oauth4webapi@npm:3.8.8"
+  checksum: 10c0/1f7d35ba8d7d5aa9ce9ec5959a4611ed2b5dd7830172b1546749b91dda8c53f7934e669c6f81e912c64e3ae4fc681d4d6ce149b42cc9d17db97162bf8765e028
+  languageName: node
+  linkType: hard
+
 "object-assign@npm:^4, object-assign@npm:^4.0.1, object-assign@npm:^4.1.1":
   version: 4.1.1
   resolution: "object-assign@npm:4.1.1"
@@ -24957,6 +25011,16 @@ __metadata:
     is-docker: "npm:^2.1.1"
     is-wsl: "npm:^2.2.0"
   checksum: 10c0/bb6b3a58401dacdb0aad14360626faf3fb7fba4b77816b373495988b724fb48941cad80c1b65d62bb31a17609b2cd91c41a181602caea597ca80dfbcc27e84c9
+  languageName: node
+  linkType: hard
+
+"openid-client@npm:6.8.8":
+  version: 6.8.8
+  resolution: "openid-client@npm:6.8.8"
+  dependencies:
+    jose: "npm:^6.2.12"
+    oauth4webapi: "npm:^3.8.8"
+  checksum: 10c0/b1d60ca45623c77b8869b5a9725e25309cca20d32823861c5f72f0e9126a3ce43da2a93be964bfe771a39560f356c06adaedb2be29fe1762c4d097f91a4b620e
   languageName: node
   linkType: hard
 

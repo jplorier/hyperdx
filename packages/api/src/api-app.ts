@@ -18,6 +18,7 @@ import pinnedFiltersRouter from './routers/api/pinnedFilters';
 import savedSearchRouter from './routers/api/savedSearch';
 import sourcesRouter from './routers/api/sources';
 import externalRoutersV2 from './routers/external-api/v2';
+import { sso } from './sso';
 import usageStats from './tasks/usageStats';
 import { registerAITelemetry } from './utils/aiTelemetry';
 import logger, { expressLogger } from './utils/logger';
@@ -88,6 +89,7 @@ app.use(function (req, res, next) {
   next();
 });
 app.use(defaultCors);
+sso.install(app);
 
 // ---------------------------------------------------------------------
 // ----------------------- Background Jobs -----------------------------

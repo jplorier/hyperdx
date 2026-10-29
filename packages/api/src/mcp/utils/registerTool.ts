@@ -5,6 +5,7 @@ import type {
 import type { AnyZodObject } from 'zod';
 
 import type { McpContext, RegisterToolFn } from '@/mcp/tools/types';
+import { sso } from '@/sso';
 
 import { withToolTracing } from './tracing';
 
@@ -29,6 +30,10 @@ export function createRegisterTool(
       context,
       handler,
     );
-    server.registerTool<AnyZodObject, AnyZodObject>(name, config, traced);
+    server.registerTool<AnyZodObject, AnyZodObject>(
+      name,
+      config,
+      sso.guardMcpTool(name, config.annotations, traced),
+    );
   };
 }

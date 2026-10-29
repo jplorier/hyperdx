@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["express-session", "jest", "node", "passport"],
+    "declaration": true,
+    "importHelpers": false,
+    "isolatedModules": true,
+    "rootDir": "./src",
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}

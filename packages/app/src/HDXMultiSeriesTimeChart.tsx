@@ -1634,13 +1634,16 @@ export const MemoChart = memo(function MemoChart({
   }, [displayType, graphResults.length, containerWidth, yAxisWidth]);
 
   const formatTime = useFormatTime();
+  // Past a day, time-of-day alone repeats across ticks; show the date too.
+  const xTickSpansDays =
+    dateRange[1].getTime() - dateRange[0].getTime() > 24 * 60 * 60 * 1000;
   const xTickFormatter = useCallback(
     (value: number, index: number) => {
       return formatTime(value * 1000, {
-        format: index === 0 ? 'normal' : 'time',
+        format: index === 0 ? 'normal' : xTickSpansDays ? 'short' : 'time',
       });
     },
-    [formatTime],
+    [formatTime, xTickSpansDays],
   );
 
   const tickFormatter = useCallback(

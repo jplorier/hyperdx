@@ -1,0 +1,81 @@
+# Shared with the clickstack subchart, whose hyperdx.config and
+# hyperdx.secrets are rendered through tpl and read these values.
+global:
+  sso:
+    # Public host serving HyperDX. Dex is served on it under /dex.
+    host: ""
+    # Shared by HyperDX and Dex's static client. `openssl rand -hex 32`.
+    oidcClientSecret: ""
+    # Group names as Dex emits them: `org:team-slug` from GitHub (bare org
+    # names are not emitted when `sso.github.orgs` is set), group emails from
+    # Google. Sign-in needs one of allowedGroups.
+    allowedGroups: []
+    # Empty makes every allowed user an admin.
+    adminGroups: []
+    memberGroups: []
+
+sso:
+  github:
+    enabled: true
+    clientID: ""
+    clientSecret: ""
+    # Dex rejects users outside these orgs/teams before HyperDX sees them.
+    # - name: topia-io
+    #   teams: [devops, dev]
+    orgs: []
+  google:
+    enabled: false
+    clientID: ""
+    clientSecret: ""
+    # Restricts sign-in to these Workspace domains.
+    hostedDomains: []
+    # Service account key with domain-wide delegation for
+    # admin.directory.group.readonly. Needed for the groups claim.
+    serviceAccountJSON: ""
+    # Workspace admin the service account impersonates to list groups.
+    adminEmail: ""
+  # Routes https://<host>/dex to Dex. Disable when the ingress is managed
+  # elsewhere. For a shared AWS ALB, set the same
+  # alb.ingress.kubernetes.io/group.name as the HyperDX ingress.
+  dexIngress:
+    enabled: true
+    className: ""
+    annotations: {}
+    tls: []
+
+clickstack:
+  hyperdx:
+    config:
+      FRONTEND_URL: "https://{{ .Values.global.sso.host }}"
+      SSO_ENABLED: "true"
+      SSO_OIDC_ISSUER: "https://{{ .Values.global.sso.host }}/dex"
+      SSO_OIDC_CLIENT_ID: hyperdx
+      SSO_ALLOWED_GROUPS: '{{ join "," .Values.global.sso.allowedGroups }}'
+      SSO_ADMIN_GROUPS: '{{ join "," .Values.global.sso.adminGroups }}'
+      SSO_MEMBER_GROUPS: '{{ join "," .Values.global.sso.memberGroups }}'
+    secrets:
+      SSO_OIDC_CLIENT_SECRET: "{{ .Values.global.sso.oidcClientSecret }}"
+    deployment:
+      image:
+        repository: ghcr.io/jplorier/hyperdx
+        # Set by CI to the matching image, <api version>-sso.<sha>.
+        tag: 0.0.0-dev
+
+dex:
+  # Fixed names: the templates in this chart refer to the Dex service and
+  # config Secret by name, and subchart values cannot be templated.
+  fullnameOverride: dex
+  image:
+    tag: v2.46.1
+  configSecret:
+    create: false
+    name: dex-config
+  volumes:
+    - name: google-sa
+      secret:
+        secretName: dex-google-sa
+        optional: true
+  volumeMounts:
+    - name: google-sa
+      mountPath: /var/dex/google
+      readOnly: true

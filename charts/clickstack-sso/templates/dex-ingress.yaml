@@ -1,0 +1,34 @@
+{{- with .Values.sso.dexIngress }}
+{{- if .enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dex
+  labels:
+    app.kubernetes.io/part-of: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ $.Values.global.sso.host | quote }}
+      http:
+        paths:
+          - path: /dex
+            pathType: Prefix
+            backend:
+              service:
+                name: dex
+                port:
+                  name: http
+{{- end }}
+{{- end }}

@@ -51,6 +51,7 @@ COPY .yarnrc.yml yarn.lock package.json nx.json .prettierrc .prettierignore ./ts
 # Only copy package.json for workspace resolution during yarn install;
 # full source is copied in the build stages that need it.
 COPY ./packages/common-utils/package.json ./packages/common-utils/package.json
+COPY ./packages/sso/package.json ./packages/sso/package.json
 COPY ./packages/api/jest.config.js ./packages/api/tsconfig.json ./packages/api/tsconfig.build.json ./packages/api/package.json ./packages/api/
 COPY ./packages/app/jest.config.js ./packages/app/tsconfig.json ./packages/app/tsconfig.build.json ./packages/app/package.json ./packages/app/next.config.mjs ./packages/app/mdx.d.ts ./packages/app/css.d.ts ./packages/app/eslint.config.mjs ./packages/app/
 
@@ -78,6 +79,7 @@ WORKDIR /app
 
 # Copy pre-built common-utils from its dedicated build stage
 COPY --from=common-utils-builder /app/packages/common-utils ./packages/common-utils
+COPY ./packages/sso ./packages/sso
 
 COPY --from=api ./src ./packages/api/src
 COPY --from=api ./bin ./packages/api/bin
@@ -97,7 +99,8 @@ COPY --from=app ./scripts ./packages/app/scripts
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_OUTPUT_STANDALONE=true
 ENV NEXT_PUBLIC_IS_LOCAL_MODE=false
-RUN yarn workspace @hyperdx/api run build && \
+RUN yarn workspace @hyperdx/sso run build && \
+    yarn workspace @hyperdx/api run build && \
     yarn workspace @hyperdx/app run build
 RUN --mount=type=cache,target=/root/.yarn/berry/cache,id=yarn-cache \
     rm -rf node_modules && yarn workspaces focus @hyperdx/api --production
@@ -132,6 +135,8 @@ COPY --chown=node:node --from=builder /app/packages/api/build ./packages/api/bui
 COPY --chown=node:node --from=builder /app/packages/api/bin ./packages/api/bin
 COPY --chown=node:node --from=builder /app/packages/common-utils/dist ./packages/common-utils/dist
 COPY --chown=node:node --from=node_base /app/packages/common-utils/node_modules ./packages/common-utils/node_modules
+COPY --chown=node:node --from=builder /app/packages/sso/package.json ./packages/sso/package.json
+COPY --chown=node:node --from=builder /app/packages/sso/dist ./packages/sso/dist
 COPY --chown=node:node --from=builder /app/packages/app/.next/standalone ./packages/app
 COPY --chown=node:node --from=builder /app/packages/app/.next/static ./packages/app/packages/app/.next/static
 COPY --chown=node:node --from=builder /app/packages/app/public ./packages/app/packages/app/public

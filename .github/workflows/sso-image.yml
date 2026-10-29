@@ -1,31 +1,53 @@
 name: Build SSO image
 
-# Builds a HyperDX `prod` image with the proxy-auth (oauth2-proxy/Dex) SSO
-# overlay applied onto a chosen upstream tag, and pushes it to this repo's
-# GitHub Container Registry (ghcr.io/<owner>/<repo>) so the cluster can pull it.
-#
-# Usage: Actions tab -> "Build SSO image" -> Run workflow -> pick the upstream
-# app tag that matches the ClickStack chart's appVersion (e.g. @hyperdx/app@2.42.0).
+# Builds the HyperDX `prod` image from this fork (upstream + packages/sso),
+# then the clickstack-sso Helm chart (ClickStack + Dex) pinned to that image,
+# and pushes both to this repo's GHCR:
+#   ghcr.io/<owner>/<repo>:<version>-sso.<sha>          image
+#   oci://ghcr.io/<owner>/charts/clickstack-sso <same>  chart
+# <version> is packages/api's, i.e. the upstream release last merged in.
 
 on:
   workflow_dispatch:
-    inputs:
-      upstream_tag:
-        description: 'Upstream HyperDX app tag to build (must match chart appVersion)'
-        required: true
-        default: '@hyperdx/app@2.42.0'
   push:
     branches: [main]
-    paths:
-      - 'sso/**'
-      - '.github/workflows/sso-image.yml'
 
 permissions:
   contents: read
   packages: write
 
 jobs:
+  meta:
+    runs-on: ubuntu-26.04
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The tag doubles as the chart's SemVer version, where a numeric
+      # identifier may not start with 0. Lengthen an all-digit short sha until
+      # it has a letter.
+      - name: Resolve version and tag
+        id: meta
+        run: |
+          VERSION="$(jq -r .version packages/api/package.json)"
+          LEN=7
+          REV="$(git rev-parse --short=$LEN HEAD)"
+          while [[ "$REV" =~ ^0[0-9]*$ ]]; do
+            LEN=$((LEN + 1))
+            REV="$(git rev-parse --short=$LEN HEAD)"
+          done
+          {
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "version=$VERSION"
+            echo "tag=$VERSION-sso.$REV"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: meta
     # Native runner per arch (the mgmt observability nodepool is arm64).
     strategy:
       matrix:
@@ -36,28 +58,8 @@ jobs:
             runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Checkout fork (with sso/ overlay)
+      - name: Checkout fork
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Resolve tag & version
-        id: ver
-        # Inputs reach the script through env, never ${{ }} interpolation,
-        # so a crafted tag cannot inject shell.
-        env:
-          TAG: ${{ inputs.upstream_tag || '@hyperdx/app@2.42.0' }}
-        run: |
-          [[ "$TAG" =~ ^@hyperdx/app@[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tag: $TAG"; exit 1; }
-          VERSION="${TAG##*@}"   # @hyperdx/app@2.42.0 -> 2.42.0
-          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
-          echo "Building $TAG (version $VERSION)"
-
-      - name: Integrate SSO overlay onto upstream tag
-        env:
-          TAG: ${{ steps.ver.outputs.tag }}
-        run: ./sso/apply.sh "$TAG" build
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -69,29 +71,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lowercase image name
-        id: img
-        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
       - name: Build and push prod image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: build
-          file: build/docker/hyperdx/Dockerfile
+          context: .
+          file: docker/hyperdx/Dockerfile
           target: prod
           platforms: linux/${{ matrix.arch }}
           build-contexts: |
-            hyperdx=build/docker/hyperdx
-            api=build/packages/api
-            app=build/packages/app
+            hyperdx=docker/hyperdx
+            api=packages/api
+            app=packages/app
           build-args: |
-            CODE_VERSION=${{ steps.ver.outputs.version }}-sso
-          tags: ghcr.io/${{ steps.img.outputs.name }}:${{ steps.ver.outputs.version }}-sso-${{ matrix.arch }}
+            CODE_VERSION=${{ needs.meta.outputs.tag }}
+          tags:
+            ${{ needs.meta.outputs.image }}:${{ needs.meta.outputs.tag }}-${{
+            matrix.arch }}
           push: true
           provenance: false
 
   manifest:
-    needs: build
+    needs: [meta, build]
     runs-on: ubuntu-26.04
     steps:
       - name: Log in to GHCR
@@ -104,19 +104,57 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # Also tag <ver>-sso.<sha>: immutable, so IfNotPresent nodes never reuse a
-      # stale cached image after a rebuild of the same upstream version.
+      # <version>-sso.<sha> is immutable, so IfNotPresent nodes never reuse a
+      # stale cached image; <version>-sso and sso-latest move with main.
       - name: Create multi-arch manifest
         env:
-          TAG: ${{ inputs.upstream_tag || '@hyperdx/app@2.42.0' }}
+          IMAGE: ${{ needs.meta.outputs.image }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
-          [[ "$TAG" =~ ^@hyperdx/app@[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid tag: $TAG"; exit 1; }
-          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          SRC="${IMAGE}:${TAG##*@}-sso"
           docker buildx imagetools create \
-            -t "${SRC}" \
-            -t "${SRC}.${GITHUB_SHA::7}" \
-            -t "${IMAGE}:sso-latest" \
-            "${SRC}-amd64" \
-            "${SRC}-arm64"
-          docker buildx imagetools inspect "${SRC}"
+            -t "$IMAGE:$TAG" \
+            -t "$IMAGE:$VERSION-sso" \
+            -t "$IMAGE:sso-latest" \
+            "$IMAGE:$TAG-amd64" \
+            "$IMAGE:$TAG-arm64"
+          docker buildx imagetools inspect "$IMAGE:$TAG"
+
+  chart:
+    needs: [meta, manifest]
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+
+      - name: Package chart pinned to the image
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        working-directory: charts/clickstack-sso
+        run: |
+          # Exactly one placeholder: the HyperDX image tag.
+          [ "$(grep -c '0.0.0-dev' values.yaml)" = 1 ] || { echo "expected one image tag placeholder"; exit 1; }
+          sed -i "s|repository: ghcr.io/jplorier/hyperdx|repository: $IMAGE|; s|0.0.0-dev|$TAG|" values.yaml
+          helm dependency build .
+          helm lint . \
+            --set global.sso.host=lint.example.com \
+            --set global.sso.oidcClientSecret=lint \
+            --set 'global.sso.allowedGroups={lint}' \
+            --set sso.github.clientID=lint \
+            --set sso.github.clientSecret=lint \
+            --set 'sso.github.orgs[0].name=lint'
+          helm package . --version "$TAG" --app-version "$TAG" -d "$RUNNER_TEMP"
+
+      - name: Push chart
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP/clickstack-sso-$TAG.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"

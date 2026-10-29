@@ -12,6 +12,26 @@
         "outputs": [
           "{projectRoot}/openapi.json"
         ]
+      },
+      "dev": {
+        "dependsOn": [
+          {
+            "projects": [
+              "@hyperdx/sso"
+            ],
+            "target": "build"
+          }
+        ]
+      },
+      "dev-task": {
+        "dependsOn": [
+          {
+            "projects": [
+              "@hyperdx/sso"
+            ],
+            "target": "build"
+          }
+        ]
       }
     }
   },
@@ -25,6 +45,7 @@
     "@hyperdx/common-utils": "^0.32.0",
     "@hyperdx/node-opentelemetry": "^0.9.0",
     "@hyperdx/passport-local-mongoose": "^9.0.1",
+    "@hyperdx/sso": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@opentelemetry/api": "^1.8.0",
     "@opentelemetry/host-metrics": "^0.35.5",
