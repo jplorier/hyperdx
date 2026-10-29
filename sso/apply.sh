@@ -29,9 +29,11 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
 UPSTREAM_URL="https://github.com/hyperdxio/hyperdx.git"
-# Fetched into a private namespace: this fork also carries tags with upstream
-# names (e.g. made by inherited release workflows), and those must never be
-# what gets built.
+# Fetched into a private namespace: the fork's CI checkout (fetch-depth 0)
+# carries every fork tag, including ones with upstream names (e.g. made by
+# inherited release workflows). Fetching into refs/tags/ would either refuse to
+# clobber them or overwrite them; a separate ref sidesteps both, and those fork
+# tags are never what gets built.
 REF="refs/sso-upstream/tags/${TAG}"
 
 echo "[sso] fetching tag $TAG from $UPSTREAM_URL"
