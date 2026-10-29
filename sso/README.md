@@ -74,6 +74,23 @@ empty in Terraform — `oauth2-proxy.tf` then skips the dockerconfigjson secret 
 | `PROXY_AUTH_EMAIL_HEADER` | `x-auth-request-email` | `x-forwarded-email` | Identity header (in-path mode → `x-forwarded-email`). |
 | `PROXY_AUTH_NAME_HEADER` | `x-auth-request-preferred-username` | `x-forwarded-preferred-username` | Display name (optional). |
 | `PROXY_AUTH_DEFAULT_TEAM_NAME` | `HyperDX` | (default) | Team created on first login. |
+| `PROXY_AUTH_GROUPS_HEADER` | `x-forwarded-groups` | (default) | Groups header (oauth2-proxy GitHub: `org`, `org:team`). |
+| `PROXY_AUTH_ADMIN_GROUPS` | (empty → roles off) | `topia-io:devops,metaversecloud-com:devops` | Comma-separated groups with full access. |
+
+### Roles
+
+HyperDX OSS has no RBAC; the overlay adds two roles, enforced app-wide by
+`proxyAuthRoleGuard` (mounted before every router):
+
+- **admin** — any user in `PROXY_AUTH_ADMIN_GROUPS`: full access.
+- **viewer** — everyone else: all `GET`s plus read-only `POST`s (search/charts via
+  `/clickhouse-proxy`, `/v1/prometheus/query*`, `/ai/assistant`,
+  `/me/onboarding/*`). Every other write returns 403. Viewer ClickHouse queries
+  are forced to `readonly=2`, so raw SQL through the proxy cannot modify data.
+
+The UI is unchanged: viewers still see edit buttons, but saving fails. On an
+upstream upgrade, re-check new `POST` routes viewers need and run
+`yarn ci:unit src/middleware/__tests__/proxyAuth.test.ts` in the integrated tree.
 
 > **Security:** only enable when HyperDX is reachable *exclusively* through
 > oauth2-proxy, and the proxy strips client-supplied copies of these headers.
