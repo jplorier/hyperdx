@@ -3,7 +3,7 @@
 //
 //   node sso/integrate.mjs <target-dir>
 //
-// Three steps, all idempotent:
+// Four steps, all idempotent:
 //   1. Copy every file under sso/overlay/ into <target-dir> (new files only,
 //      mirroring repo paths) — these never conflict with upstream.
 //   2. Anchor-based codemod of packages/api/src/middleware/auth.ts to route
@@ -12,6 +12,8 @@
 //      shape) instead of silently producing a broken build.
 //   3. Anchor-based codemod of packages/api/src/api-app.ts mounting the
 //      app-wide role guard (viewer vs admin, from proxy-supplied groups).
+//   4. Anchor-based codemod of packages/app/src/HDXMultiSeriesTimeChart.tsx
+//      so time-chart x-axis ticks show the date on ranges longer than a day.
 import { cp, readFile, writeFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -98,6 +100,52 @@ if (appSrc.includes('proxyAuthRoleGuard')) {
 
   await writeFile(appPath, appSrc);
   console.log('[sso] mounted proxyAuthRoleGuard in api-app.ts');
+}
+
+// 4) Time-chart x-axis: upstream formats every tick after the first as
+//    time-of-day only ('time'), whatever the range. Over a 30-day range that is
+//    a row of identical "9:00:00 AM" labels with no dates. When the range spans
+//    more than a day, label every tick with its date ('short' = MMM d h:mma).
+const chartPath = path.join(target, 'packages/app/src/HDXMultiSeriesTimeChart.tsx');
+if (!(await exists(chartPath))) {
+  throw new Error(`[sso] expected file not found: ${chartPath}`);
+}
+
+let chartSrc = await readFile(chartPath, 'utf8');
+
+if (chartSrc.includes('xTickSpansDays')) {
+  console.log('[sso] HDXMultiSeriesTimeChart.tsx already integrated, skipping codemod');
+} else {
+  const tickAnchor =
+    '  const xTickFormatter = useCallback(\n' +
+    '    (value: number, index: number) => {\n' +
+    '      return formatTime(value * 1000, {\n' +
+    "        format: index === 0 ? 'normal' : 'time',\n" +
+    '      });\n' +
+    '    },\n' +
+    '    [formatTime],\n' +
+    '  );';
+  if (chartSrc.split(tickAnchor).length !== 2) {
+    throw new Error(
+      '[sso] xTickFormatter anchor not found exactly once in HDXMultiSeriesTimeChart.tsx (layout changed)',
+    );
+  }
+  chartSrc = chartSrc.replace(
+    tickAnchor,
+    '  const xTickSpansDays =\n' +
+      '    dateRange[1].getTime() - dateRange[0].getTime() > 24 * 60 * 60 * 1000;\n' +
+      '  const xTickFormatter = useCallback(\n' +
+      '    (value: number, index: number) => {\n' +
+      '      return formatTime(value * 1000, {\n' +
+      "        format: index === 0 ? 'normal' : xTickSpansDays ? 'short' : 'time',\n" +
+      '      });\n' +
+      '    },\n' +
+      '    [formatTime, xTickSpansDays],\n' +
+      '  );',
+  );
+
+  await writeFile(chartPath, chartSrc);
+  console.log('[sso] patched x-axis tick format in HDXMultiSeriesTimeChart.tsx');
 }
 
 console.log('[sso] integration complete');
