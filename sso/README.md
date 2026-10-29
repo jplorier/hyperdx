@@ -30,7 +30,10 @@ Files:
 - `integrate.mjs` — copies the overlay and applies idempotent, anchor-based
   codemods to `auth.ts`, `api-app.ts` and `mcp/utils/registerTool.ts`. Fails
   loudly if upstream changed those files' shape.
-- `apply.sh` — checks out an upstream tag into a git worktree and runs the codemod.
+- `apply.sh` — checks out an upstream tag into a git worktree, cherry-picks the
+  upstream security commits listed in `UPSTREAM_PATCHES` that the tag lacks, and
+  runs the codemod. The tag is fetched from hyperdxio/hyperdx into
+  `refs/sso-upstream/`, so same-named tags in this fork are never built.
 
 ## Build locally
 
@@ -103,6 +106,17 @@ Write decisions are logged (`Proxy auth: write`, `... write denied`,
 
 The UI is unchanged: non-admins still see edit buttons, but saving returns 403
 naming the required role.
+
+The guard also, while proxy auth is on:
+- matches paths case-insensitively, as Express routes do;
+- rejects browser writes from another site (`Sec-Fetch-Site`, else `Origin`
+  vs `FRONTEND_URL`), since the oauth2-proxy cookie alone authenticates;
+- strips the team ingestion key (`apiKey`, `hookId`) from `GET /me` and
+  `GET /team` for non-admins;
+- returns 404 for password login, registration and invite setup.
+
+`FRONTEND_URL` must be the public URL (`https://click.topia.io`): it drives the
+`Origin` check and the session cookie's `secure` flag.
 
 ### Access keys, API v2 and MCP
 
@@ -187,4 +201,6 @@ set tfvars → apply.
 1. Pick the new `@hyperdx/app@<x.y.z>` tag (match the ClickStack chart `appVersion`).
 2. Run the workflow with that tag. If `integrate.mjs` errors on a missing anchor,
    upstream reshaped `isUserAuthenticated` — update the anchors in `integrate.mjs`.
-3. Point the chart at the new image tag and upgrade chart + image together.
+3. Drop entries from `UPSTREAM_PATCHES` in `apply.sh` once the tag contains
+   them (they are skipped automatically, so this is only tidying).
+4. Point the chart at the new image tag and upgrade chart + image together.
